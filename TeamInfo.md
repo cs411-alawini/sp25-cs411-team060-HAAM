@@ -11,7 +11,7 @@
 | Member1     |    Aman Ravishankar    |
 | Member1     |   aman12@illinois.edu  |
 | Member2     |     Michael Yang       |
-| Member2     |  mryang33@illinois.edu |
+| Member2     |  mryang3@illinois.edu |
 | Member3     |     Arushi Sharma      |
 | Member3     | sharma90@illinois.edu  |
 
