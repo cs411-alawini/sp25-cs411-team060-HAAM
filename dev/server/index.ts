@@ -30,7 +30,142 @@ app.use(cors({
 }));
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); 
+app.use(express.urlencoded({ extended: true }));
+
+//transaction () endpoint
+app.post("/diagnose", (req, res) => {
+  const symptoms = req.body.symptoms; 
+  let max_results;
+  if (req.body.maxResults) {
+    max_results = req.body.maxResults
+  } else {
+    max_results = 10;
+  }
+  
+  const input_symptoms = symptoms.join(',');
+
+  connection.query(
+    "CALL DiseaseDiagnosis6(?, ?)", [input_symptoms, max_results],
+    (err, results) => {
+      // @ts-ignore
+      res.json({diagnoses: results[0]});
+    }
+  );
+});
+
+//stored procedure (user health history) endpoint
+app.get("/history", (req, res) => {
+  // @ts-ignore
+  const userId = req.user.id;
+  let months;
+  if (req.query.months) {
+    // @ts-ignore
+    months = parseInt(req.query.months)
+  } else {
+    months = 6
+  }
+  
+  connection.query(
+    "CALL UserHealthHistory2(?,?)", [userId, months],
+    (err, results) => {
+      const response = {
+        // @ts-ignore
+        recurringSymptoms: results[0] || [],
+        // @ts-ignore
+        recurringDiseases: results[1] || []
+      };
+
+      res.json(response);
+    }
+  );
+});
+
+//signup endpoint
+// @ts-ignore
+app.post("/signup", (req, res) => {
+  const {Username, Email, Password} = req.body;
+
+  if (!Username || !Email || !Password) {
+    return res.status(400).json({ message: 'all fields required' });
+  }
+
+  connection.query(
+    "SELECT * FROM User WHERE Username = ? or Email = ?",
+    [Username, Email],
+    (err, results) => {
+      // @ts-ignore
+      if (results.length > 0) {
+        return res.status(409).json({message:'user already exists'});
+      }
+
+      connection.query(
+        "SELECT MAX(UserID) as maxId FROM User",
+        (err, results) => {
+          // @ts-ignore
+          let newUserId;
+          // @ts-ignore
+          if (results[0].maxId) {
+            // @ts-ignore
+            newUserId = results[0].maxId+1;
+          } else {
+            // @ts-ignore
+            newUserId = 1;
+          }
+
+          connection.query(
+            "INSERT INTO User (UserId, Username, Email, Password) VALUES (?, ?, ?, ?)",
+            [newUserId, Username, Email, Password],
+            (err, results) => {
+              res.status(200).json({
+                message:'user signedup successfully',
+                user: {
+                  userId: newUserId,
+                  username: Username,
+                  email: Email
+                }
+              });
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+//login endpoint 
+// @ts-ignore
+app.post("/login", (req, res) => {
+  const {Username, Password} = req.body;
+
+  if (!Username || !Password) {
+    return res.status(400).json({ message: 'username and password required' });
+  }
+
+  connection.query(
+    "SELECT * FROM User WHERE Username = ? AND Password = ?", [Username, Password],
+    (err, results) => {
+      if (err) {
+        return res.status(500).json({error:"login failed", details: err.message});
+      }
+
+      // @ts-ignore
+      if (results.length === 0) {
+        return res.status(401).json({message:'invalid login credentials'});
+      }
+
+      // @ts-ignore
+      const user = results[0];
+      res.status(200).json({
+        message: 'login successful',
+        user: {
+          userId: user.UserID,
+          username: user.Username,
+          email: user.Email
+        }
+      });
+    }
+  );
+});
 
 //create functionality
 app.post("/users", (req, res) => {
