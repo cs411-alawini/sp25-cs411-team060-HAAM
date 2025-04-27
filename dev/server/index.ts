@@ -26,20 +26,21 @@ app.listen(PORT, () => {
 app.use(cors({
   origin: 'http://localhost:3000', //react port
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  allowedHeaders: ['Content-Type', 'X-User-ID']
 }));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-//transaction () endpoint
+//transaction (disease diagnosis) endpoint
 app.post("/diagnose", (req, res) => {
-  const symptoms = req.body.symptoms; 
+  // @ts-ignore
+  const symptoms = req.body.symptoms.map(s => s.toLowerCase()); 
   let max_results;
   if (req.body.maxResults) {
     max_results = req.body.maxResults
   } else {
-    max_results = 10;
+    max_results = 3;
   }
   
   const input_symptoms = symptoms.join(',');
@@ -53,10 +54,27 @@ app.post("/diagnose", (req, res) => {
   );
 });
 
+//helper endpoint to also display medicine for diagnosed disease
+app.post("/diagnose-helper", (req, res) => {
+  const diseaseID = req.body.diseaseID;
+
+  connection.query("SELECT m.MedicineID, m.MedicineName, m.SideEffects, m.UsageInstructions FROM Medicine m JOIN Disease_Medicine dm ON m.MedicineID = dm.MedicineID WHERE dm.DiseaseID = ?", [diseaseID],
+    (err, results) => {
+    if (err) {
+      console.error("Error fetching medicines:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    res.json({ medicines: results });
+  });
+});
+
 //stored procedure (user health history) endpoint
 app.get("/history", (req, res) => {
   // @ts-ignore
-  const userId = req.user.id;
+  const userId = req.headers['x-user-id'] || req.query.userId;
+  console.log('Parsed UserID:', userId);
+
   let months;
   if (req.query.months) {
     // @ts-ignore
@@ -64,10 +82,18 @@ app.get("/history", (req, res) => {
   } else {
     months = 6
   }
+  console.log('Parsed Months:', months);
   
   connection.query(
     "CALL UserHealthHistory2(?,?)", [userId, months],
     (err, results) => {
+      if (err) {
+        console.error('Database Error:', err);
+        return res.status(500).json({ error: err.message });
+      }
+
+      console.log('Query Results:', results);
+
       const response = {
         // @ts-ignore
         recurringSymptoms: results[0] || [],
@@ -165,6 +191,331 @@ app.post("/login", (req, res) => {
       });
     }
   );
+});
+
+//consultation - create endpoint
+// @ts-ignore
+app.post("/consultation", (req, res) => {
+  const { UserID, DiseaseName, Notes } = req.body;
+  // @ts-ignore
+  const currentDate = new Date().toISOString().split('T')[0]; //making date today
+  
+  connection.query(
+    "SELECT DiseaseID FROM Disease WHERE DiseaseName = ?",
+    [DiseaseName],
+    (err, diseaseResults) => {
+      // @ts-ignore
+      if (diseaseResults.length === 0) {
+        return res.status(404).json({ error: "Disease not found", diseaseName: DiseaseName });
+      }
+      
+      // @ts-ignore
+      const DiseaseID = diseaseResults[0].DiseaseID;
+      
+      connection.query(
+        "SELECT MAX(ConsultationID) as maxId FROM UserConsultation",
+        (err, results) => {
+          let newConsultationId;
+          // @ts-ignore
+          if (results[0].maxId) {
+            // @ts-ignore
+            newConsultationId = results[0].maxId + 1;
+          } else {
+            newConsultationId = 1;
+          }
+          
+          connection.query(
+            "INSERT INTO UserConsultation (ConsultationID, UserID, DiseaseID, Date, Notes) VALUES (?, ?, ?, ?, ?)",
+            [newConsultationId, UserID, DiseaseID, currentDate, Notes || ""],
+            (err, results) => {
+              if (err) {
+                console.error("MySQL Insert Error:", err);
+                return res.status(500).json({ 
+                    error: "Insert failed", 
+                    details: err.message,
+                    sqlState: err.sqlState
+                });
+            }
+
+              res.status(201).json({
+                message: "Consultation added successfully",
+                consultation: {
+                  ConsultationID: newConsultationId,
+                  UserID,
+                  DiseaseName,
+                  DiseaseID,
+                  Date: currentDate,
+                  Notes
+                }
+              });
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+//consultation - a user can read consultations they've made thus far
+app.get("/user-consultations/:userId", (req, res) => {
+  const userId = req.params.userId;
+
+  // Comprehensive query to fetch consultations with disease names and symptoms
+  connection.query(
+    `SELECT uc.ConsultationID, d.DiseaseName, uc.Date, uc.Notes,
+      (SELECT GROUP_CONCAT(s.SymptomName SEPARATOR ', ') 
+       FROM UserConsultation_Symptom ucs
+       JOIN Symptom s ON ucs.SymptomID = s.SymptomID
+       WHERE ucs.ConsultationID = uc.ConsultationID) as Symptoms
+    FROM UserConsultation uc
+    JOIN Disease d ON uc.DiseaseID = d.DiseaseID
+    WHERE uc.UserID = ?
+    ORDER BY uc.Date DESC`,
+    [userId],
+    (err, results) => {
+      if (err) {
+        console.error('Consultation fetch error:', err);
+        return res.status(500).json({ 
+          error: "Failed to fetch consultations", 
+          details: err.message 
+        });
+      }
+      // @ts-ignore
+      const consultations = results.map(result => ({
+        ...result,
+        // @ts-ignore
+        Symptoms: result.Symptoms ? result.Symptoms.split(',').map(s => s.trim()) : []
+      }));
+
+      res.json({ consultations });
+    }
+  );
+});
+
+//consultation - update endpoint
+app.put("/consultation/:consultationId", (req, res) => {
+  const { consultationId } = req.params;
+  const { DiseaseName, Notes, Symptoms } = req.body;
+  const currentDate = new Date().toISOString().split('T')[0];
+
+  connection.beginTransaction((err) => {
+    connection.query(
+      "SELECT DiseaseID FROM Disease WHERE DiseaseName = ?",
+      [DiseaseName],
+      (err, diseaseResults) => {
+        if (err) {
+          return connection.rollback(() => {
+            res.status(500).json({ error: "Disease lookup failed" });
+          });
+        }
+
+        // @ts-ignore 
+        if (diseaseResults.length === 0) {
+          return connection.rollback(() => {
+            res.status(404).json({ error: "Disease not found" });
+          });
+        }
+
+        // @ts-ignore 
+        const DiseaseID = diseaseResults[0].DiseaseID;
+
+        //update main consultation 
+        connection.query(
+          "UPDATE UserConsultation SET DiseaseID = ?, Notes = ?, Date = ? WHERE ConsultationID = ?",
+          [DiseaseID, Notes || "", currentDate, consultationId],
+          (err) => {
+            if (err) {
+              return connection.rollback(() => {
+                res.status(500).json({ error: "Consultation update failed" });
+              });
+            }
+
+            connection.query(
+              "DELETE FROM UserConsultation_Symptom WHERE ConsultationID = ?",
+              [consultationId],
+              (err) => {
+                if (err) {
+                  return connection.rollback(() => {
+                    res.status(500).json({ error: "Symptom deletion failed" });
+                  });
+                }
+
+                if (Symptoms && Symptoms.length > 0) {
+                  // @ts-ignore 
+                  const symptomInsertQueries = Symptoms.map(symptom => 
+                    new Promise((resolve, reject) => {
+                      connection.query(
+                        "SELECT SymptomID FROM Symptom WHERE SymptomName = ?",
+                        [symptom.trim()],
+                        (err, symptomResults) => {
+                          if (err) return reject(err);
+                          // @ts-ignore 
+                          if (symptomResults.length === 0) return resolve(null);
+
+                          // @ts-ignore 
+                          const SymptomID = symptomResults[0].SymptomID;
+                          connection.query(
+                            "INSERT INTO UserConsultation_Symptom (ConsultationID, SymptomID) VALUES (?, ?)",
+                            [consultationId, SymptomID],
+                            (err) => {
+                              if (err) return reject(err);
+                              resolve(null);
+                            }
+                          );
+                        }
+                      );
+                    })
+                  );
+
+                  Promise.all(symptomInsertQueries)
+                    .then(() => {
+                      connection.commit((err) => {
+                        if (err) {
+                          return connection.rollback(() => {
+                            res.status(500).json({ error: "Commit failed" });
+                          });
+                        }
+                        res.status(200).json({ 
+                          message: "Consultation updated successfully",
+                          consultationId 
+                        });
+                      });
+                    })
+                    .catch((err) => {
+                      return connection.rollback(() => {
+                        res.status(500).json({ error: "Symptom insertion failed" });
+                      });
+                    });
+                } else {
+                  connection.commit((err) => {
+                    if (err) {
+                      return connection.rollback(() => {
+                        res.status(500).json({ error: "Commit failed" });
+                      });
+                    }
+                    res.status(200).json({ 
+                      message: "Consultation updated successfully",
+                      consultationId 
+                    });
+                  });
+                }
+              }
+            );
+          }
+        );
+      }
+    );
+  });
+});
+
+//consultation - delete endpoint
+app.delete("/consultation/:consultationId", (req, res) => {
+  const { consultationId } = req.params;
+
+  connection.beginTransaction((err) => {
+    connection.query(
+      "DELETE FROM UserConsultation_Symptom WHERE ConsultationID = ?",
+      [consultationId],
+      (err) => {
+        if (err) {
+          return connection.rollback(() => {
+            res.status(500).json({ error: "Symptom deletion failed" });
+          });
+        }
+
+        connection.query(
+          "DELETE FROM UserConsultation WHERE ConsultationID = ?",
+          [consultationId],
+          (err) => {
+            if (err) {
+              return connection.rollback(() => {
+                res.status(500).json({ error: "Consultation deletion failed" });
+              });
+            }
+
+            connection.commit((err) => {
+              if (err) {
+                return connection.rollback(() => {
+                  res.status(500).json({ error: "Commit failed" });
+                });
+              }
+              res.status(200).json({ 
+                message: "Consultation deleted successfully",
+                consultationId 
+              });
+            });
+          }
+        );
+      }
+    );
+  });
+});
+
+//add-on endpoint to update join table when adding user consultation
+app.post("/consultation-symptoms", (req, res) => {
+  const { ConsultationID, Symptoms } = req.body;
+
+  connection.beginTransaction((err) => {
+    // @ts-ignore
+    const insertSymptom = (symptom, callback) => {
+      connection.query(
+        "SELECT SymptomID FROM Symptom WHERE SymptomName = ?",
+        [symptom.trim()],
+        (err, symptomResults) => {
+          if (err) {
+            return callback(err);
+          }
+
+          // @ts-ignore
+          if (symptomResults.length === 0) {
+            console.warn(`Symptom not found in database: ${symptom}`);
+            return callback(null);
+          }
+
+          // @ts-ignore
+          const SymptomID = symptomResults[0].SymptomID;
+
+          connection.query(
+            "INSERT INTO UserConsultation_Symptom (ConsultationID, SymptomID) VALUES (?, ?)",
+            [ConsultationID, SymptomID],
+            (err) => {
+              if (err) {
+                return callback(err);
+              }
+              callback(null);
+            }
+          );
+        }
+      );
+    };
+
+    const async = require('async');
+    // @ts-ignore
+    async.each(Symptoms, insertSymptom, (err) => {
+      if (err) {
+        return connection.rollback(() => {
+          res.status(500).json({ 
+            error: "Failed to insert symptoms", 
+            details: err.message 
+          });
+        });
+      }
+
+      connection.commit((err) => {
+        if (err) {
+          return connection.rollback(() => {
+            res.status(500).json({ error: "Commit failed" });
+          });
+        }
+
+        res.status(201).json({
+          message: "Symptoms added successfully",
+          ConsultationID,
+          Symptoms
+        });
+      });
+    });
+  });
 });
 
 //create functionality
