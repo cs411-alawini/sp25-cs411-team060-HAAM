@@ -6,7 +6,6 @@ import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import NavBar from './components/NavBar';
 import LoginSignup from './pages/LoginSignup';
 import Chat from './pages/Chat';
-import BodyScan from './pages/BodyScan';
 import History from './pages/History';
 import Consultation from './pages/Consultation';
 
@@ -44,10 +43,9 @@ function App() {
       <NavBar onLogout={handleLogout} userName={user.username} />
       <div style={{ padding: '20px' }}>
         <Routes>
-          <Route path="/" element={<Navigate replace to="/bodyscan" />} />
-          <Route path="/login" element={<Navigate replace to="/bodyscan" />} />
+          <Route path="/" element={<Navigate replace to="/chat" />} />
+          <Route path="/login" element={<Navigate replace to="/chat" />} />
           <Route path="/chat" element={<Chat />} />
-          <Route path="/bodyscan" element={<BodyScan />} />
           <Route path="/history" element={<History />} />
           <Route path="/consultation" element={<Consultation />} />
           <Route path="*" element={<h1>404: Page Not Found</h1>} />

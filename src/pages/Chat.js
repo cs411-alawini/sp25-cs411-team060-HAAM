@@ -5,7 +5,7 @@ const Chat = () => {
     { 
       id: 1, 
       type: 'system', 
-      text: 'Welcome to SympChat! Please describe your symptoms or click on the affected area in the body visualization.' 
+      text: 'Welcome to SympChat! Please list your symptoms in a comma separated list to get diagnosed.' 
     }
   ]);
   const [inputText, setInputText] = useState('');
@@ -13,34 +13,89 @@ const Chat = () => {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Scroll to bottom of chat whenever messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView();
   }, [messages]);
 
-  // Function to simulate fetching diagnoses from the backend
+  const fetchMedicinesForDiagnoses = async (diagnosesData) => {
+    try {
+      const diagnosesWithMedicines = await Promise.all(
+        diagnosesData.map(async (diagnosis) => {
+          const response = await fetch('http://localhost:5000/diagnose-helper', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              diseaseID: diagnosis.DiseaseID
+            }),
+          });
+          
+          if (!response.ok) {
+            console.error(`Failed to get medicines for disease ${diagnosis.DiseaseID}`);
+            return { ...diagnosis, medicines: [] };
+          }
+          
+          const data = await response.json();
+          return { ...diagnosis, medicines: data.medicines || [] };
+        })
+      );
+      
+      return diagnosesWithMedicines;
+    } catch (error) {
+      console.error('Error fetching medicines:', error);
+      return diagnosesData.map(diagnosis => ({ ...diagnosis, medicines: [] }));
+    }
+  };
+
   const fetchDiagnoses = async (symptomText) => {
     setIsLoading(true);
     
     try {
-      // Simulating network request
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      const symptoms = symptomText.split(',').map(s => s.trim());
       
-      // Mock response data
-      const mockDiagnoses = [
-        { id: 1, name: 'Common Cold', confidence: 85, description: 'A viral infection of the upper respiratory tract.' },
-        { id: 2, name: 'Seasonal Allergies', confidence: 72, description: 'An immune response to environmental triggers like pollen.' },
-        { id: 3, name: 'Influenza', confidence: 45, description: 'A viral infection that attacks your respiratory system.' }
-      ];
+      const response = await fetch('http://localhost:5000/diagnose', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symptoms: symptoms,
+          maxResults: 3
+        }),
+      });
       
-      setDiagnoses(mockDiagnoses);
+      if (!response.ok) {
+        throw new Error('Failed to get diagnoses');
+      }
       
-      // Add bot response
+      const data = await response.json();
+      let formattedDiagnoses = data.diagnoses ? data.diagnoses.map(diagnosis => {
+        const formattedDescription = diagnosis.Description ? 
+          diagnosis.Description.replace(/_/g, ' ') : '';
+        
+        return {
+          id: diagnosis.DiseaseID,
+          name: diagnosis.DiseaseName,
+          description: formattedDescription,
+          matchingCount: diagnosis.MatchingSymptomCount,
+          similarDiseases: diagnosis.SimilarDiseases,
+          DiseaseID: diagnosis.DiseaseID // Keep the original ID for API calls
+        };
+      }) : [];
+      
+      formattedDiagnoses = await fetchMedicinesForDiagnoses(formattedDiagnoses);
+      
+      // sort diagnoses by confidence 
+      formattedDiagnoses.sort((a, b) => b.confidence - a.confidence);
+      setDiagnoses(formattedDiagnoses);
+      
       setMessages(prev => [...prev, {
         id: Date.now(),
         type: 'system',
-        text: `Based on your symptoms, I've identified some potential conditions. Please check the diagnosis panel for details.`
+        text: `Based on your symptoms, I've identified ${formattedDiagnoses.length} potential conditions. Please check the diagnosis panel for details.`
       }]);
+      
     } catch (error) {
       console.error('Error fetching diagnoses:', error);
       setMessages(prev => [...prev, {
@@ -53,13 +108,10 @@ const Chat = () => {
     }
   };
 
-  // Handle form submission
   const handleSubmit = (e) => {
     e.preventDefault();
     
     if (!inputText.trim()) return;
-    
-    // Add user message to chat
     const userMessage = {
       id: Date.now(),
       type: 'user',
@@ -67,15 +119,10 @@ const Chat = () => {
     };
     
     setMessages(prev => [...prev, userMessage]);
-    
-    // Process the symptoms
     fetchDiagnoses(inputText);
-    
-    // Clear input field
     setInputText('');
   };
 
-  // Basic inline styles for layout (minimum styling)
   const containerStyle = {
     display: 'flex',
     width: '100%',
@@ -141,6 +188,22 @@ const Chat = () => {
     marginBottom: '15px',
     borderRadius: '5px'
   };
+  
+  const medicineListStyle = {
+    marginTop: '10px',
+    paddingLeft: '15px'
+  };
+  
+  const medicineItemStyle = {
+    marginBottom: '5px',
+    fontSize: '14px'
+  };
+
+  const medicineSectionStyle = {
+    marginTop: '15px',
+    borderTop: '1px solid #eee',
+    paddingTop: '10px'
+  };
 
   return (
     <div style={containerStyle}>
@@ -185,6 +248,20 @@ const Chat = () => {
       
       <div style={sidebarStyle}>
         <h2>Potential Diagnoses</h2>
+        
+        {/* Debug data section */}
+        <div style={{ marginBottom: '15px', fontSize: '12px', whiteSpace: 'pre-wrap' }}>
+          <details>
+            <summary>Debug Data</summary>
+            <strong>Raw input symptoms:</strong><br/>
+            {inputText}<br/><br/>
+            <strong>Processed symptoms:</strong><br/>
+            {inputText.split(',').map(s => s.trim()).join(', ')}<br/><br/>
+            <strong>Raw diagnosis data:</strong><br/>
+            {JSON.stringify(diagnoses, null, 2)}
+          </details>
+        </div>
+        
         {diagnoses.length === 0 ? (
           <p>Describe your symptoms to get diagnoses</p>
         ) : (
@@ -192,28 +269,39 @@ const Chat = () => {
             {diagnoses.map(diagnosis => (
               <div key={diagnosis.id} style={diagnosisCardStyle}>
                 <h3>{diagnosis.name}</h3>
-                <div>
-                  <div style={{ 
-                    height: '8px', 
-                    width: `${diagnosis.confidence}%`, 
-                    backgroundColor: '#5cb85c',
-                    marginTop: '5px',
-                    marginBottom: '5px'
-                  }}></div>
-                  <span>{diagnosis.confidence}% match</span>
-                </div>
                 <p>{diagnosis.description}</p>
-                <button style={{
-                  width: '100%',
-                  padding: '8px',
-                  marginTop: '10px',
-                  backgroundColor: 'white',
-                  border: '1px solid #4e8cff',
-                  color: '#4e8cff',
-                  cursor: 'pointer'
-                }}>
-                  More Information
-                </button>
+                
+                {diagnosis.similarDiseases && (
+                  <p><strong>Similar conditions:</strong> {diagnosis.similarDiseases}</p>
+                )}
+                
+                {/* Medicine section */}
+                <div style={medicineSectionStyle}>
+                  <h4>Recommended Medicines:</h4>
+                  {diagnosis.medicines && diagnosis.medicines.length > 0 ? (
+                    <ul style={medicineListStyle}>
+                      {diagnosis.medicines.map(medicine => (
+                        <li key={medicine.MedicineID} style={medicineItemStyle}>
+                          <strong>{medicine.MedicineName}</strong>
+                          {medicine.UsageInstructions && 
+                            <p style={{fontSize: '12px', marginTop: '2px', color: '#555'}}>
+                              Usage: {medicine.UsageInstructions}
+                            </p>
+                          }
+                          {medicine.SideEffects && 
+                            <p style={{fontSize: '12px', marginTop: '2px', color: '#c74444'}}>
+                              Side effects: {medicine.SideEffects}
+                            </p>
+                          }
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p style={{fontStyle: 'italic', color: '#888'}}>
+                      No specific medications found for this condition.
+                    </p>
+                  )}
+                </div>
               </div>
             ))}
           </div>

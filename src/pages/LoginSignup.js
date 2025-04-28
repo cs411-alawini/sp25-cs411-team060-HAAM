@@ -8,58 +8,63 @@ function LoginSignup() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [debugInfo, setDebugInfo] = useState(''); 
   const navigate = useNavigate();
+
+  const toggleLoginSignup = () => {
+    setIsLogin(!isLogin);
+    setUsername('');
+    setEmail('');
+    setPassword('');
+    setError('');
+    setDebugInfo('');
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setDebugInfo('Attempting ' + (isLogin ? 'login' : 'signup') + '...');
     
     try {
       if (isLogin) {
-        // Login logic
-        const response = await axios.post('/login', {
+        const response = await axios.post('http://localhost:5000/login', {
           Username: username,
           Password: password
         });
         
-        // Store user data in localStorage
         localStorage.setItem('user', JSON.stringify(response.data.user));
         
-        // Redirect to main page
-        navigate('/bodyscan');
+        setTimeout(() => {
+          navigate('/chat');
+          setTimeout(() => {
+            window.location.href = '/chat';
+          }, 100);
+        }, 100);
       } else {
-        // Signup logic
-        const response = await axios.post('/signup', {
+        const response = await axios.post('http://localhost:5000/signup', {
           Username: username,
           Email: email,
           Password: password
         });
         
-        // Store user data in localStorage
         localStorage.setItem('user', JSON.stringify(response.data.user));
         
-        // Redirect to main page
-        navigate('/bodyscan');
+        setTimeout(() => {
+          navigate('/chat');
+          setTimeout(() => {
+            window.location.href = '/chat';
+          }, 100);
+        }, 100);
       }
     } catch (error) {
-      setError(error.response?.data?.message || 'An error occurred');
+      if (error.response) {
+        setError(error.response.data.message || 'Server error');
+      } else if (error.request) {
+        setError('No response from server. Is the backend running?');
+      } else {
+        setError('Request error: ' + error.message);
+      }
     }
-  };
-
-  // Bypass function for testing
-  const bypassLogin = () => {
-    // Create a test user object
-    const testUser = {
-      userId: 999,
-      username: "TestUser",
-      email: "test@example.com"
-    };
-    
-    // Store in localStorage just like a real login
-    localStorage.setItem('user', JSON.stringify(testUser));
-    
-    // Navigate to main page
-    navigate('/bodyscan');
   };
 
   return (
@@ -99,7 +104,7 @@ function LoginSignup() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full p-2 border rounded"
-                required={!isLogin}
+                required
               />
             </div>
           )}
@@ -123,25 +128,19 @@ function LoginSignup() {
           >
             {isLogin ? 'Login' : 'Sign Up'}
           </button>
+
+          {/* Toggle between Login and Signup */}
+          <div className="text-center">
+            {isLogin ? "Don't have an account? " : "Already have an account? "}
+            <button
+              type="button"
+              onClick={toggleLoginSignup}
+              className="text-blue-500 hover:text-blue-700 underline"
+            >
+              {isLogin ? 'Sign Up' : 'Login'}
+            </button>
+          </div>
         </form>
-        
-        {/* Testing bypass button */}
-        <button
-          onClick={bypassLogin}
-          className="w-full bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded mb-4"
-        >
-          Bypass Login (Testing Only)
-        </button>
-        
-        <p className="mt-4 text-center">
-          {isLogin ? "Don't have an account? " : "Already have an account? "}
-          <button
-            onClick={() => setIsLogin(!isLogin)}
-            className="text-blue-500 hover:text-blue-700"
-          >
-            {isLogin ? 'Sign Up' : 'Login'}
-          </button>
-        </p>
       </div>
     </div>
   );
